@@ -7,7 +7,7 @@
 		"latest": "1.26-alpine"
 	},
 	"tools": {
-		"golangci-lint": "v2.7.2",
+		"golangci-lint": "v2.11.4",
 		"tparse": "v0.18.0"
 	}
 }
