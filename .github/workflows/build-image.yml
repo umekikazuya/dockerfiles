@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   detect-changes:
@@ -28,7 +27,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             IMAGES=$(ls -d images/*/ 2>/dev/null | xargs -I{} basename {})
           else
-            IMAGES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- images/ \
+            IMAGES=$(git diff --diff-filter=ACMRT --name-only ${{ github.event.before }} ${{ github.sha }} -- images/ \
               | cut -d'/' -f2 \
               | sort -u)
           fi
@@ -62,6 +61,9 @@ jobs:
 
   # マトリクスビルド（イメージ × バージョン）
   build-push:
+    permissions:
+      contents: read
+      packages: write
     needs: detect-changes
     if: needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != ''
     runs-on: ubuntu-latest
