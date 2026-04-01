@@ -1,0 +1,92 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "images/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Build matrix
+        id: matrix
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            IMAGES=$(ls -d images/*/ 2>/dev/null | xargs -I{} basename {})
+          else
+            IMAGES=$(git diff --name-only HEAD~1 HEAD -- images/ \
+              | cut -d'/' -f2 \
+              | sort -u)
+          fi
+
+          MATRIX="[]"
+          for IMAGE in $IMAGES; do
+            VERSIONS_FILE="images/${IMAGE}/versions.json"
+            if [ -f "$VERSIONS_FILE" ]; then
+              VERSIONS=$(jq -r '.versions[]' "$VERSIONS_FILE")
+              LATEST=$(jq -r '.latest' "$VERSIONS_FILE")
+              for VERSION in $VERSIONS; do
+                IS_LATEST=$( [ "$VERSION" = "$LATEST" ] && echo "true" || echo "false" )
+                MATRIX=$(echo "$MATRIX" | jq -c \
+                  --arg image "$IMAGE" \
+                  --arg version "$VERSION" \
+                  --arg is_latest "$IS_LATEST" \
+                  '. + [{"image": $image, "version": $version, "is_latest": $is_latest}]')
+              done
+            else
+              MATRIX=$(echo "$MATRIX" | jq -c \
+                --arg image "$IMAGE" \
+                '. + [{"image": $image, "version": "", "is_latest": "true"}]')
+            fi
+          done
+
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
+  build-push:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine tags
+        id: tags
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}"
+          TAGS="${IMAGE}:${{ matrix.version }}"
+          if [ "${{ matrix.is_latest }}" = "true" ]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: images/${{ matrix.image }}
+          push: true
+          build-args: |
+            GO_VERSION=${{ matrix.version }}
+          tags: ${{ steps.tags.outputs.tags }}
