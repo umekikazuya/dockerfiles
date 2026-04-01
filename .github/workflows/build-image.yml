@@ -1,0 +1,115 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "images/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build matrix
+        id: matrix
+        run: |
+          # 変更されたイメージを検出（手動実行時は全イメージ）
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            IMAGES=$(ls -d images/*/ 2>/dev/null | xargs -I{} basename {})
+          else
+            IMAGES=$(git diff --diff-filter=ACMRT --name-only ${{ github.event.before }} ${{ github.sha }} -- images/ \
+              | cut -d'/' -f2 \
+              | sort -u)
+          fi
+
+          # 各イメージの versions.json を読んでマトリクスを組み立てる
+          MATRIX="[]"
+          for IMAGE in $IMAGES; do
+            VERSIONS_FILE="images/${IMAGE}/versions.json"
+            if [ -f "$VERSIONS_FILE" ]; then
+              GO_VERSIONS=$(jq -r '.go.versions[]' "$VERSIONS_FILE")
+              GO_LATEST=$(jq -r '.go.latest' "$VERSIONS_FILE")
+              TOOLS_JSON=$(jq -c '.tools // {}' "$VERSIONS_FILE")
+              for VERSION in $GO_VERSIONS; do
+                IS_LATEST=$( [ "$VERSION" = "$GO_LATEST" ] && echo "true" || echo "false" )
+                MATRIX=$(echo "$MATRIX" | jq -c \
+                  --arg image "$IMAGE" \
+                  --arg version "$VERSION" \
+                  --arg is_latest "$IS_LATEST" \
+                  --argjson tools "$TOOLS_JSON" \
+                  '. + [{"image": $image, "version": $version, "is_latest": $is_latest, "tools": $tools}]')
+              done
+            else
+              # versions.json がなければバージョンなしで1回ビルド
+              MATRIX=$(echo "$MATRIX" | jq -c \
+                --arg image "$IMAGE" \
+                '. + [{"image": $image, "version": "", "is_latest": "true", "tools": {}}]')
+            fi
+          done
+
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
+  # マトリクスビルド（イメージ × バージョン）
+  build-push:
+    permissions:
+      contents: read
+      packages: write
+    needs: detect-changes
+    if: needs.detect-changes.outputs.matrix != '[]' && needs.detect-changes.outputs.matrix != ''
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine tags
+        id: tags
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}"
+          TAGS="${IMAGE}:${{ matrix.version }}"
+          if [ "${{ matrix.is_latest }}" = "true" ]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare build args
+        id: build_args
+        run: |
+          VERSIONS_FILE="images/${{ matrix.image }}/versions.json"
+          ARGS="GO_VERSION=${{ matrix.version }}"
+          if [ -f "$VERSIONS_FILE" ]; then
+            for KEY in $(jq -r '.tools // {} | keys[]' "$VERSIONS_FILE"); do
+              VALUE=$(jq -r --arg k "$KEY" '.tools[$k]' "$VERSIONS_FILE")
+              ARG_NAME=$(echo "$KEY" | tr '-' '_' | tr '[:lower:]' '[:upper:]')_VERSION
+              ARGS=$(printf '%s\n%s=%s' "$ARGS" "$ARG_NAME" "$VALUE")
+            done
+          fi
+          echo "args<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$ARGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: images/${{ matrix.image }}
+          push: true
+          build-args: ${{ steps.build_args.outputs.args }}
+          tags: ${{ steps.tags.outputs.tags }}
