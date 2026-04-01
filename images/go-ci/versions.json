@@ -1,0 +1,13 @@
+{
+	"go": {
+		"versions": [
+			"1.25-alpine",
+			"1.26-alpine"
+		],
+		"latest": "1.26-alpine"
+	},
+	"tools": {
+		"golangci-lint": "v2.7.2",
+		"tparse": "v0.18.0"
+	}
+}
