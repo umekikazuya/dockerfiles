@@ -1,0 +1,12 @@
+{
+	"go": {
+		"versions": [
+			"1.25-alpine",
+			"1.26-alpine"
+		],
+		"latest": "1.26-alpine"
+	},
+	"tools": {
+		"air": "v1.63.5"
+	}
+}
