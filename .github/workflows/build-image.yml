@@ -19,15 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Build matrix
         id: matrix
         run: |
+          # 変更されたイメージを検出（手動実行時は全イメージ）
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             IMAGES=$(ls -d images/*/ 2>/dev/null | xargs -I{} basename {})
           else
-            IMAGES=$(git diff --name-only HEAD~1 HEAD -- images/ \
+            IMAGES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} -- images/ \
               | cut -d'/' -f2 \
               | sort -u)
           fi
