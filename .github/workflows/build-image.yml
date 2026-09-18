@@ -23,7 +23,6 @@ jobs:
       - name: Build matrix
         id: matrix
         run: |
-          # 変更されたイメージを検出（手動実行時は全イメージ）
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             IMAGES=$(ls -d images/*/ 2>/dev/null | xargs -I{} basename {})
           else
@@ -32,7 +31,6 @@ jobs:
               | sort -u)
           fi
 
-          # 各イメージの versions.json を読んでマトリクスを組み立てる
           MATRIX="[]"
           for IMAGE in $IMAGES; do
             VERSIONS_FILE="images/${IMAGE}/versions.json"
@@ -50,7 +48,6 @@ jobs:
                   '. + [{"image": $image, "version": $version, "is_latest": $is_latest, "tools": $tools}]')
               done
             else
-              # versions.json がなければバージョンなしで1回ビルド
               MATRIX=$(echo "$MATRIX" | jq -c \
                 --arg image "$IMAGE" \
                 '. + [{"image": $image, "version": "", "is_latest": "true", "tools": {}}]')
@@ -88,24 +85,38 @@ jobs:
 
       - name: Determine tags
         id: tags
+        env:
+          MATRIX_VERSION: ${{ matrix.version }}
         run: |
           IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}"
-          TAGS="${IMAGE}:${{ matrix.version }}"
+          TAGS=""
+          if [ -n "$MATRIX_VERSION" ]; then
+            TAGS="${IMAGE}:${MATRIX_VERSION}"
+          fi
           if [ "${{ matrix.is_latest }}" = "true" ]; then
-            TAGS="${TAGS},${IMAGE}:latest"
+            TAGS="${TAGS:+${TAGS},}${IMAGE}:latest"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare build args
         id: build_args
+        env:
+          MATRIX_VERSION: ${{ matrix.version }}
         run: |
           VERSIONS_FILE="images/${{ matrix.image }}/versions.json"
-          ARGS="GO_VERSION=${{ matrix.version }}"
+          ARGS=""
+          if [ -n "$MATRIX_VERSION" ]; then
+            ARGS="GO_VERSION=${MATRIX_VERSION}"
+          fi
           if [ -f "$VERSIONS_FILE" ]; then
             for KEY in $(jq -r '.tools // {} | keys[]' "$VERSIONS_FILE"); do
               VALUE=$(jq -r --arg k "$KEY" '.tools[$k]' "$VERSIONS_FILE")
               ARG_NAME=$(echo "$KEY" | tr '-' '_' | tr '[:lower:]' '[:upper:]')_VERSION
-              ARGS=$(printf '%s\n%s=%s' "$ARGS" "$ARG_NAME" "$VALUE")
+              if [ -n "$ARGS" ]; then
+                ARGS=$(printf '%s\n%s=%s' "$ARGS" "$ARG_NAME" "$VALUE")
+              else
+                ARGS="${ARG_NAME}=${VALUE}"
+              fi
             done
           fi
           echo "args<<EOF" >> "$GITHUB_OUTPUT"
