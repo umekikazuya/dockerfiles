@@ -90,9 +90,14 @@ jobs:
         id: tags
         run: |
           IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}"
-          TAGS="${IMAGE}:${{ matrix.version }}"
+          # versions.json を持たないイメージは version が空になるので、
+          # "image:" という不正なタグを混ぜないように分岐する
+          TAGS=""
+          if [ -n "${{ matrix.version }}" ]; then
+            TAGS="${IMAGE}:${{ matrix.version }}"
+          fi
           if [ "${{ matrix.is_latest }}" = "true" ]; then
-            TAGS="${TAGS},${IMAGE}:latest"
+            TAGS="${TAGS:+${TAGS},}${IMAGE}:latest"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
@@ -100,12 +105,20 @@ jobs:
         id: build_args
         run: |
           VERSIONS_FILE="images/${{ matrix.image }}/versions.json"
-          ARGS="GO_VERSION=${{ matrix.version }}"
+          # version が空のイメージに GO_VERSION= を渡すと未使用 build-arg の warning が出る
+          ARGS=""
+          if [ -n "${{ matrix.version }}" ]; then
+            ARGS="GO_VERSION=${{ matrix.version }}"
+          fi
           if [ -f "$VERSIONS_FILE" ]; then
             for KEY in $(jq -r '.tools // {} | keys[]' "$VERSIONS_FILE"); do
               VALUE=$(jq -r --arg k "$KEY" '.tools[$k]' "$VERSIONS_FILE")
               ARG_NAME=$(echo "$KEY" | tr '-' '_' | tr '[:lower:]' '[:upper:]')_VERSION
-              ARGS=$(printf '%s\n%s=%s' "$ARGS" "$ARG_NAME" "$VALUE")
+              if [ -n "$ARGS" ]; then
+                ARGS=$(printf '%s\n%s=%s' "$ARGS" "$ARG_NAME" "$VALUE")
+              else
+                ARGS="${ARG_NAME}=${VALUE}"
+              fi
             done
           fi
           echo "args<<EOF" >> "$GITHUB_OUTPUT"
